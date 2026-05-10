@@ -31,10 +31,22 @@ def main() -> None:
     import os
 
     port = int(os.getenv("MCP_PORT", "9000"))
+    host = os.getenv("MCP_HOST", "127.0.0.1")
     try:
-        print(f"Starting Care Gap Closer MCP at http://127.0.0.1:{port}/mcp")
+        print(f"Starting Care Gap Closer MCP at http://{host}:{port}/mcp")
         print("Press Ctrl+C to stop.")
-        mcp.run(transport="http", host="127.0.0.1", port=port)
+        # stateless_http + json_response keeps the server interoperable with
+        # plain HTTP/JSON clients (e.g. the PromptOpinion MCP test probe).
+        # Without these, MCP's Streamable HTTP transport requires every caller
+        # to include `Accept: text/event-stream` and to keep an SSE stream open
+        # via GET /mcp, which most generic HTTP clients do not do.
+        mcp.run(
+            transport="http",
+            host=host,
+            port=port,
+            stateless_http=False,
+            json_response=True,
+        )
     except KeyboardInterrupt:
         print("\nServer stopped.")
 
