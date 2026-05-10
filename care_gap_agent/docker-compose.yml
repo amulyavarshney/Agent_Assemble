@@ -1,0 +1,15 @@
+# care_gap_agent — local Docker Compose runner.
+#
+# This only runs the A2A agent. The MCP server at care_gap_mcp/ runs separately
+# (see ../care_gap_mcp/README.md). Set MCP_SERVER_URL in .env to point at it.
+
+services:
+  care_gap:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      AGENT_MODULE: care_gap_agent.app:a2a_app
+      PORT: "8001"
