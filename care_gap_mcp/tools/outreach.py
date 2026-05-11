@@ -1,12 +1,15 @@
-"""Patient outreach drafter — turns a care gap into plain-language patient copy.
+"""Patient outreach drafter — loads prompts from prompts/*.md.
 
-This is the second AI-factor tool: a rule engine can detect the gap, but only
-an LLM can author warm, sixth-grade-reading-level outreach text that is
-specific to this patient's evidence. We accept the gap object from FindCareGaps
-and produce a short SMS-ready message plus a longer portal message.
+Each LLM prompt is a separate markdown file under care_gap_mcp/prompts so the
+clinical/comms team can edit tone, reading level, and structure without
+touching Python. tone_guide.md is the shared style spec referenced by both
+outreach_sms.md and outreach_portal.md.
 """
 import os
 from typing import Any
+
+from po_fastmcp import load_prompt
+
 
 def register(mcp) -> None:
     mcp.tool(name="DraftOutreachMessage")(draft_outreach_message)
@@ -40,9 +43,9 @@ async def draft_outreach_message(
 
     drafts: dict[str, str] = {}
     if channel in ("sms", "both"):
-        drafts["sms"] = _generate(client, _sms_prompt(gap, patient_name))
+        drafts["sms"] = _generate(client, _build_prompt("outreach_sms", gap, patient_name))
     if channel in ("portal", "both"):
-        drafts["portal"] = _generate(client, _portal_prompt(gap, patient_name))
+        drafts["portal"] = _generate(client, _build_prompt("outreach_portal", gap, patient_name))
 
     return {
         "status": "success",
@@ -60,36 +63,21 @@ def _generate(client, prompt: str) -> str:
     return (response.text or "").strip()
 
 
-_TONE = (
-    "Sixth-grade reading level. Warm, not alarmist. Never use the word 'overdue' "
-    "or 'gap' — phrase it as a recommendation. No medical disclaimers. No emojis. "
-    "Do not invent specific dates, doctor names, or appointment slots."
-)
-
-
-def _sms_prompt(gap: dict, patient_name: str | None) -> str:
-    name_phrase = f"Address them as {patient_name}." if patient_name else "Do not use a name placeholder."
-    return (
-        "Write a single SMS message under 160 characters inviting the patient to "
-        "schedule. " + name_phrase + " " + _TONE + "\n\n"
-        f"Care recommendation: {gap['title']}\n"
-        f"Why it matters now: {gap.get('rationale', '')}\n"
-        f"Evidence: {gap.get('evidence', {})}\n\n"
-        "Output only the SMS text — no preamble."
+def _build_prompt(prompt_name: str, gap: dict, patient_name: str | None) -> str:
+    """Compose <channel prompt> + <tone guide> + <gap evidence> into one string."""
+    channel_prompt = load_prompt(prompt_name)
+    tone_guide = load_prompt("tone_guide")
+    name_line = (
+        f"patient_name: {patient_name}" if patient_name
+        else "patient_name: (not provided — open with a warm greeting only)"
     )
-
-
-def _portal_prompt(gap: dict, patient_name: str | None) -> str:
-    greeting = f"Hi {patient_name}," if patient_name else "Hi,"
     return (
-        f"Write a patient-portal message starting with '{greeting}'. Three short "
-        "paragraphs:\n"
-        "1. What we're recommending (1-2 sentences).\n"
-        "2. Why it matters for them, referencing the evidence specifically.\n"
-        "3. Next step (call the clinic to schedule).\n\n"
-        f"Tone: {_TONE}\n\n"
-        f"Care recommendation: {gap['title']}\n"
-        f"Clinical rationale: {gap.get('rationale', '')}\n"
-        f"Evidence: {gap.get('evidence', {})}\n\n"
-        "Output only the message body — no subject line, no preamble."
+        f"{channel_prompt}\n\n"
+        f"---\n# tone_guide.md (referenced above)\n{tone_guide}\n---\n\n"
+        f"# Inputs for this draft\n"
+        f"{name_line}\n"
+        f"care_recommendation: {gap['title']}\n"
+        f"clinical_rationale: {gap.get('rationale', '')}\n"
+        f"evidence: {gap.get('evidence', {})}\n\n"
+        f"Now write the message."
     )

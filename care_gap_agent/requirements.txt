@@ -13,3 +13,6 @@ litellm==1.83.7
 
 # ASGI server
 uvicorn>=0.41.0
+
+# YAML knowledge base + routing rules
+pyyaml>=6.0

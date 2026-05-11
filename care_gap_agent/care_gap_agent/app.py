@@ -14,50 +14,32 @@ from dotenv import load_dotenv
 # CARE_GAP_AGENT_MODEL; shared.middleware reads API_KEYS).
 load_dotenv()
 
-from a2a.types import AgentSkill
 from shared.app_factory import create_a2a_app
 
 from .agent import root_agent
+from .resources import load_prompt, load_skills
 
 _PORT = int(os.getenv("PORT", "8001"))
 _PUBLIC_URL = os.getenv("CARE_GAP_AGENT_URL", os.getenv("BASE_URL", f"http://localhost:{_PORT}"))
 _PO_BASE = os.getenv("PO_PLATFORM_BASE_URL", "https://app.promptopinion.ai")
 
+# SMART scopes the MCP tools require to operate against a FHIR server.
+# Keep aligned with care_gap_mcp/main.py — both must declare the same set.
+_FHIR_SCOPES = [
+    {"name": "patient/Patient.rs", "required": True},
+    {"name": "patient/Condition.rs", "required": True},
+    {"name": "patient/Observation.rs", "required": True},
+    {"name": "patient/Procedure.rs", "required": True},
+    {"name": "patient/MedicationRequest.rs"},
+]
+
 a2a_app = create_a2a_app(
     agent=root_agent,
     name="care_gap_agent",
-    description=(
-        "Finds USPSTF-aligned preventive care gaps for the patient in context "
-        "and drafts patient-facing outreach to close them."
-    ),
+    description=load_prompt("agent_description"),
     url=_PUBLIC_URL,
     port=_PORT,
     fhir_extension_uri=f"{_PO_BASE}/schemas/a2a/v1/fhir-context",
-    fhir_scopes=[
-        {"name": "patient/Patient.rs", "required": True},
-        {"name": "patient/Condition.rs", "required": True},
-        {"name": "patient/Observation.rs", "required": True},
-        {"name": "patient/Procedure.rs", "required": True},
-        {"name": "patient/MedicationRequest.rs"},
-    ],
-    skills=[
-        AgentSkill(
-            id="find-care-gaps",
-            name="find-care-gaps",
-            description=(
-                "Identify open USPSTF preventive screening / monitoring gaps for "
-                "the patient in context, with structured evidence and rationale."
-            ),
-            tags=["care-gaps", "uspstf", "fhir", "prevention"],
-        ),
-        AgentSkill(
-            id="draft-outreach",
-            name="draft-outreach",
-            description=(
-                "Draft patient-facing SMS or portal outreach copy for a specific "
-                "care gap, written at a sixth-grade reading level."
-            ),
-            tags=["outreach", "communication", "patient-engagement"],
-        ),
-    ],
+    fhir_scopes=_FHIR_SCOPES,
+    skills=load_skills(),
 )

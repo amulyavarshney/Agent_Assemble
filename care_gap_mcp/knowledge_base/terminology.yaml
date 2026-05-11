@@ -1,0 +1,104 @@
+# Terminology — coding sets referenced by care_gap_rules.yaml.
+#
+# Each top-level key is a code_set name (used in the rules YAML). Conservative
+# by design: expanding a set should be a clinical-review change, so we keep
+# membership small and explicit. New codes are easy to add when needed.
+#
+# system: a FHIR canonical URL (do not change — these are HL7 standard)
+# match:  exact | prefix
+# codes:  list of code strings to include
+
+# ── Diagnosis sets ────────────────────────────────────────────────────────────
+
+diabetes_snomed:
+  system: http://snomed.info/sct
+  match: exact
+  codes:
+    - "44054006"           # Diabetes mellitus type 2
+    - "73211009"           # Diabetes mellitus
+    - "46635009"           # Diabetes mellitus type 1
+
+diabetes_icd10:
+  system: http://hl7.org/fhir/sid/icd-10-cm
+  match: prefix
+  codes:
+    - "E10"                # Type 1 diabetes
+    - "E11"                # Type 2 diabetes
+    - "E13"                # Other specified diabetes
+
+hypertension_snomed:
+  system: http://snomed.info/sct
+  match: exact
+  codes:
+    - "38341003"           # Essential hypertension
+    - "59621000"           # Essential (primary) hypertension
+
+hypertension_icd10:
+  system: http://hl7.org/fhir/sid/icd-10-cm
+  match: prefix
+  codes:
+    - "I10"                # Essential (primary) hypertension
+    - "I11"                # Hypertensive heart disease
+    - "I12"                # Hypertensive CKD
+    - "I13"                # Hypertensive heart and CKD
+    - "I15"                # Secondary hypertension
+
+# ── Observation (lab/vital) codes ─────────────────────────────────────────────
+
+a1c_loinc:
+  system: http://loinc.org
+  match: exact
+  codes:
+    - "4548-4"             # Hemoglobin A1c
+
+systolic_bp_loinc:
+  system: http://loinc.org
+  match: exact
+  codes:
+    - "8480-6"             # Systolic blood pressure
+
+# ── Procedure codes ───────────────────────────────────────────────────────────
+
+colonoscopy_cpt:
+  system: http://www.ama-assn.org/go/cpt
+  match: exact
+  codes:
+    - "45378"              # Colonoscopy, flexible; diagnostic
+    - "45380"              # Colonoscopy with biopsy
+    - "45385"              # Colonoscopy with polyp removal
+
+fit_cpt:
+  system: http://www.ama-assn.org/go/cpt
+  match: exact
+  codes:
+    - "82270"              # FIT / fecal immunochemical test
+
+mammography_cpt:
+  system: http://www.ama-assn.org/go/cpt
+  match: exact
+  codes:
+    - "77065"              # Diagnostic mammography, unilateral
+    - "77066"              # Diagnostic mammography, bilateral
+    - "77067"              # Screening mammography, bilateral
+
+# ── Labels (display strings shown back to users when a code matches) ──────────
+# Optional — used by ListRecentObservations to label otherwise unlabeled codes.
+
+labels:
+  loinc:
+    "4548-4": HbA1c
+    "85354-9": Blood pressure panel
+    "8480-6": Systolic BP
+    "8462-4": Diastolic BP
+    "2093-3": Total cholesterol
+    "13457-7": LDL
+    "2085-9": HDL
+  cpt:
+    "45378": Colonoscopy
+    "45380": Colonoscopy with biopsy
+    "45385": Colonoscopy with polyp removal
+    "45330": Sigmoidoscopy
+    "82270": FIT (fecal immunochemical test)
+    "77065": Mammography (diagnostic, unilateral)
+    "77066": Mammography (diagnostic, bilateral)
+    "77067": Mammography (screening, bilateral)

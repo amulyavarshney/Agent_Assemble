@@ -1,0 +1,21 @@
+# Agent skills — published in the A2A agent card under capabilities.skills.
+#
+# Each entry maps directly to an a2a.types.AgentSkill object. Editing this
+# file is the only way to change what the Prompt Opinion marketplace shows
+# about this agent's capabilities.
+
+skills:
+
+  - id: find-care-gaps
+    name: find-care-gaps
+    description: >
+      Identify open USPSTF preventive screening / monitoring gaps for the
+      patient in context, with structured evidence and rationale.
+    tags: [care-gaps, uspstf, fhir, prevention]
+
+  - id: draft-outreach
+    name: draft-outreach
+    description: >
+      Draft patient-facing SMS or portal outreach copy for a specific care
+      gap, written at a sixth-grade reading level.
+    tags: [outreach, communication, patient-engagement]

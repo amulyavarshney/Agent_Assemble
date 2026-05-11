@@ -1,10 +1,12 @@
-"""Care gap finder — USPSTF-aligned rule engine + Gemini-authored rationale.
+"""Care gap finder — data-driven USPSTF rule engine + Gemini rationale.
 
-The rule engine deterministically identifies gaps so we never hallucinate one;
-the LLM is only asked to author the *clinician-facing rationale* explaining why
-this specific patient warrants action now. This is the AI factor: a rule engine
-flags the gap, but only an LLM can produce the patient-specific reasoning that
-a care manager would actually use.
+The rule engine is deterministic and 100% defined by YAML files:
+    knowledge_base/care_gap_rules.yaml   what counts as a gap
+    knowledge_base/terminology.yaml      what FHIR codes belong to each set
+
+The LLM (Gemini) is only asked to author the per-patient clinical rationale
+off the rule's structured `evidence` dict. The LLM never invents a gap; if
+the LLM is unavailable, we fall back to the rule's `rationale_template`.
 """
 import os
 from datetime import date, datetime, timezone
@@ -12,20 +14,13 @@ from typing import Any
 
 from fhir.resources.patient import Patient
 
-from po_fastmcp import FhirClient, get_fhir_context
-
-# Conservative SNOMED/ICD-10 sets — small on purpose. Expanding requires
-# clinical review; we don't want false positives.
-SNOMED_DIABETES = {"44054006", "73211009", "46635009"}
-SNOMED_HYPERTENSION = {"38341003", "59621000"}
-ICD10_DIABETES_PREFIX = ("E10", "E11", "E13")
-ICD10_HYPERTENSION_PREFIX = ("I10", "I11", "I12", "I13", "I15")
-
-LOINC_A1C = "4548-4"
-LOINC_SYSTOLIC = "8480-6"
-CPT_COLONOSCOPY = {"45378", "45380", "45385"}
-CPT_FIT = {"82270"}
-CPT_MAMMOGRAM = {"77067", "77066", "77065"}
+from po_fastmcp import (
+    FhirClient,
+    get_fhir_context,
+    load_care_gap_rules,
+    load_prompt,
+    matches_code_set,
+)
 
 
 def register(mcp) -> None:
@@ -35,9 +30,9 @@ def register(mcp) -> None:
 async def find_care_gaps() -> dict:
     """Identify USPSTF-aligned preventive care gaps for the current patient.
 
-    Each gap has: id, title, severity, evidence (raw FHIR-derived facts that
-    triggered the rule), and rationale (LLM-authored, one sentence, clinician-
-    facing). Patients with no gaps return an empty list.
+    Each gap has: id, title, severity, uspstf_grade, evidence (raw FHIR-derived
+    facts that triggered the rule), and rationale (LLM-authored one-sentence
+    clinician-facing). Patients with no gaps return gap_count=0.
     """
     context = get_fhir_context()
     if context is None or not context.patient_id:
@@ -68,81 +63,13 @@ async def find_care_gaps() -> dict:
         limit=100,
     )
 
-    has_diabetes = _has_condition(conditions, SNOMED_DIABETES, ICD10_DIABETES_PREFIX)
-    has_htn = _has_condition(conditions, SNOMED_HYPERTENSION, ICD10_HYPERTENSION_PREFIX)
-
-    most_recent_a1c = _most_recent_observation(observations, LOINC_A1C)
-    most_recent_systolic = _most_recent_observation(observations, LOINC_SYSTOLIC)
-    most_recent_colon_screen = _most_recent_procedure(procedures, CPT_COLONOSCOPY | CPT_FIT)
-    most_recent_mammogram = _most_recent_procedure(procedures, CPT_MAMMOGRAM)
-
+    rules = load_care_gap_rules().get("rules", [])
     gaps: list[dict[str, Any]] = []
+    for rule in rules:
+        gap = _evaluate_rule(rule, age, gender, conditions, observations, procedures)
+        if gap is not None:
+            gaps.append(gap)
 
-    # Diabetes A1c monitoring (every 6 months for active DM)
-    if has_diabetes and _months_since(most_recent_a1c) > 6:
-        gaps.append({
-            "id": "diabetes-a1c-overdue",
-            "title": "HbA1c overdue for diabetic patient",
-            "severity": "high",
-            "uspstf_grade": "A",
-            "evidence": {
-                "active_diabetes": True,
-                "last_a1c_date": most_recent_a1c["date"] if most_recent_a1c else None,
-                "last_a1c_value": most_recent_a1c["value"] if most_recent_a1c else None,
-                "months_since_last_a1c": _months_since(most_recent_a1c),
-            },
-        })
-
-    # Hypertension follow-up (BP every 12 months for active HTN)
-    if has_htn and _months_since(most_recent_systolic) > 12:
-        gaps.append({
-            "id": "hypertension-bp-overdue",
-            "title": "Blood pressure check overdue for hypertensive patient",
-            "severity": "medium",
-            "uspstf_grade": "A",
-            "evidence": {
-                "active_hypertension": True,
-                "last_systolic_date": most_recent_systolic["date"] if most_recent_systolic else None,
-                "last_systolic_value": most_recent_systolic["value"] if most_recent_systolic else None,
-                "months_since_last_bp": _months_since(most_recent_systolic),
-            },
-        })
-
-    # Colorectal screening (45–75, no colonoscopy in 10y or FIT in 1y)
-    if age is not None and 45 <= age <= 75:
-        years_since_colon = _months_since(most_recent_colon_screen) / 12
-        cpt = (most_recent_colon_screen or {}).get("cpt")
-        is_fit = cpt in CPT_FIT
-        overdue = years_since_colon > (1 if is_fit else 10)
-        if most_recent_colon_screen is None or overdue:
-            gaps.append({
-                "id": "colorectal-screening-overdue",
-                "title": "Colorectal cancer screening overdue",
-                "severity": "high",
-                "uspstf_grade": "A",
-                "evidence": {
-                    "age": age,
-                    "last_screening_date": (most_recent_colon_screen or {}).get("date"),
-                    "last_screening_type": (most_recent_colon_screen or {}).get("label"),
-                },
-            })
-
-    # Mammography (women 40–74, every 2 years)
-    if gender == "female" and age is not None and 40 <= age <= 74:
-        if most_recent_mammogram is None or _months_since(most_recent_mammogram) > 24:
-            gaps.append({
-                "id": "mammography-overdue",
-                "title": "Mammography overdue",
-                "severity": "high",
-                "uspstf_grade": "B",
-                "evidence": {
-                    "age": age,
-                    "gender": gender,
-                    "last_mammogram_date": (most_recent_mammogram or {}).get("date"),
-                },
-            })
-
-    # Author rationale for each gap with Gemini.
     for gap in gaps:
         gap["rationale"] = _author_rationale(gap, age, gender)
 
@@ -156,34 +83,153 @@ async def find_care_gaps() -> dict:
     }
 
 
-# ── Rule helpers ──────────────────────────────────────────────────────────────
+# ── Rule evaluation ──────────────────────────────────────────────────────────
 
-def _age(birth_date) -> int | None:
-    if birth_date is None:
+def _evaluate_rule(
+    rule: dict,
+    age: int | None,
+    gender: str,
+    conditions: list,
+    observations: list,
+    procedures: list,
+) -> dict | None:
+    """Apply a single rule. Return a gap dict if triggered, else None."""
+    if not _demographics_match(rule.get("demographics") or {}, age, gender):
         return None
-    if isinstance(birth_date, str):
-        birth_date = datetime.fromisoformat(birth_date).date()
-    today = date.today()
-    return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+
+    triggers = rule.get("triggers") or {}
+    if not _triggers_match(triggers, conditions):
+        return None
+
+    thresh = rule.get("thresholds") or {}
+    evidence = _build_evidence(rule, age, gender, conditions, observations, procedures, thresh)
+    if evidence is None:
+        return None   # threshold not crossed; not a gap
+
+    return {
+        "id": rule["id"],
+        "title": rule["title"],
+        "severity": rule["severity"],
+        "uspstf_grade": rule["uspstf_grade"],
+        "evidence": evidence,
+    }
 
 
-def _has_condition(conditions: list, snomed_codes: set[str], icd10_prefixes: tuple) -> bool:
+def _demographics_match(demo: dict, age: int | None, gender: str) -> bool:
+    if "gender" in demo and gender != demo["gender"]:
+        return False
+    if "age_min" in demo or "age_max" in demo:
+        if age is None:
+            return False
+        if "age_min" in demo and age < demo["age_min"]:
+            return False
+        if "age_max" in demo and age > demo["age_max"]:
+            return False
+    return True
+
+
+def _triggers_match(triggers: dict, conditions: list) -> bool:
+    """All trigger predicates must hold. Currently supports condition_in."""
+    if not triggers:
+        return True
+    condition_sets = triggers.get("condition_in") or []
+    if condition_sets:
+        if not any(_has_condition_in(conditions, cs) for cs in condition_sets):
+            return False
+    return True
+
+
+def _has_condition_in(conditions: list, code_set_name: str) -> bool:
     for res in conditions:
         for c in (res.get("code", {}) or {}).get("coding", []) or []:
-            code = str(c.get("code") or "")
-            system = c.get("system") or ""
-            if system == "http://snomed.info/sct" and code in snomed_codes:
-                return True
-            if system == "http://hl7.org/fhir/sid/icd-10-cm" and code.startswith(icd10_prefixes):
+            if matches_code_set(c, code_set_name):
                 return True
     return False
 
 
-def _most_recent_observation(observations: list, loinc: str) -> dict | None:
+def _build_evidence(
+    rule: dict,
+    age: int | None,
+    gender: str,
+    conditions: list,
+    observations: list,
+    procedures: list,
+    thresh: dict,
+) -> dict | None:
+    """Return evidence dict iff a threshold predicate is crossed."""
+    evidence: dict[str, Any] = {}
+    if age is not None:
+        evidence["age"] = age
+    if gender:
+        evidence["gender"] = gender
+
+    # Single-observation threshold.
+    if "observation" in thresh:
+        spec = thresh["observation"]
+        recent = _most_recent_observation(observations, spec["code_set"])
+        months = _months_since(recent)
+        if months <= spec["max_months_since"]:
+            return None
+        evidence.update({
+            "last_observation_date": (recent or {}).get("date"),
+            "last_observation_value": (recent or {}).get("value"),
+            "months_since_last": _round_months(months),
+            "max_allowed_months": spec["max_months_since"],
+        })
+        return evidence
+
+    # Single-procedure threshold.
+    if "procedure" in thresh:
+        spec = thresh["procedure"]
+        recent = _most_recent_procedure(procedures, spec["code_set"])
+        months = _months_since(recent)
+        if months <= spec["max_months_since"]:
+            return None
+        evidence.update({
+            "last_procedure_date": (recent or {}).get("date"),
+            "last_procedure_label": (recent or {}).get("label"),
+            "months_since_last": _round_months(months),
+            "max_allowed_months": spec["max_months_since"],
+        })
+        return evidence
+
+    # ANY-of procedure thresholds — pass if ANY listed procedure code set is
+    # within its own max_months_since (e.g. colorectal: colonoscopy in 10y OR
+    # FIT in 1y). The gap fires only when ALL options are stale.
+    if "procedure_any" in thresh:
+        options = thresh["procedure_any"]
+        best: dict | None = None     # the most-recent screening across options
+        any_fresh = False
+        for opt in options:
+            recent = _most_recent_procedure(procedures, opt["code_set"])
+            months = _months_since(recent)
+            if months <= opt["max_months_since"]:
+                any_fresh = True
+                break
+            if recent is not None and (best is None or months < _months_since(best)):
+                best = recent
+        if any_fresh:
+            return None
+        evidence.update({
+            "last_screening_date": (best or {}).get("date"),
+            "last_screening_label": (best or {}).get("label"),
+            "options": [
+                {"code_set": o["code_set"], "max_allowed_months": o["max_months_since"]}
+                for o in options
+            ],
+        })
+        return evidence
+
+    return None   # rule has no recognised threshold shape
+
+
+# ── FHIR resource helpers ────────────────────────────────────────────────────
+
+def _most_recent_observation(observations: list, code_set_name: str) -> dict | None:
     matches = []
     for res in observations:
         for c in (res.get("code", {}) or {}).get("coding", []) or []:
-            if c.get("system") == "http://loinc.org" and c.get("code") == loinc:
+            if matches_code_set(c, code_set_name):
                 d = res.get("effectiveDateTime") or (res.get("effectivePeriod") or {}).get("start")
                 vq = res.get("valueQuantity", {}) or {}
                 matches.append({"date": d, "value": vq.get("value"), "unit": vq.get("unit")})
@@ -193,17 +239,26 @@ def _most_recent_observation(observations: list, loinc: str) -> dict | None:
     return sorted(matches, key=lambda m: m["date"] or "", reverse=True)[0]
 
 
-def _most_recent_procedure(procedures: list, cpt_codes: set[str]) -> dict | None:
+def _most_recent_procedure(procedures: list, code_set_name: str) -> dict | None:
     matches = []
     for res in procedures:
         for c in (res.get("code", {}) or {}).get("coding", []) or []:
-            if c.get("system") == "http://www.ama-assn.org/go/cpt" and c.get("code") in cpt_codes:
+            if matches_code_set(c, code_set_name):
                 d = res.get("performedDateTime") or (res.get("performedPeriod") or {}).get("start")
                 matches.append({"date": d, "cpt": c.get("code"), "label": c.get("display")})
                 break
     if not matches:
         return None
     return sorted(matches, key=lambda m: m["date"] or "", reverse=True)[0]
+
+
+def _age(birth_date) -> int | None:
+    if birth_date is None:
+        return None
+    if isinstance(birth_date, str):
+        birth_date = datetime.fromisoformat(birth_date).date()
+    today = date.today()
+    return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
 
 
 def _months_since(record: dict | None) -> float:
@@ -219,15 +274,13 @@ def _months_since(record: dict | None) -> float:
     return delta.days / 30.4375
 
 
-# ── Rationale authoring (Gemini) ──────────────────────────────────────────────
+def _round_months(months: float) -> float | None:
+    if months == float("inf"):
+        return None
+    return round(months, 1)
 
-_GEMINI_SYSTEM = (
-    "You are a clinical care coordinator. Given a structured care-gap evidence "
-    "dict, write ONE concise sentence (<=30 words) explaining to a clinician why "
-    "closing this gap matters for THIS patient now. Reference the evidence directly. "
-    "Do not invent facts. Do not add disclaimers."
-)
 
+# ── Gemini rationale authoring ───────────────────────────────────────────────
 
 def _author_rationale(gap: dict, age: int | None, gender: str) -> str:
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -235,12 +288,12 @@ def _author_rationale(gap: dict, age: int | None, gender: str) -> str:
         return _fallback_rationale(gap)
 
     try:
-        # Lazy import — keep the MCP server bootable without google-genai installed.
         from google import genai
 
         client = genai.Client(api_key=api_key)
+        system_prompt = load_prompt("rationale_system")
         prompt = (
-            f"{_GEMINI_SYSTEM}\n\n"
+            f"{system_prompt}\n\n"
             f"Patient age: {age}\n"
             f"Patient gender: {gender}\n"
             f"Gap title: {gap['title']}\n"
@@ -258,5 +311,10 @@ def _author_rationale(gap: dict, age: int | None, gender: str) -> str:
 
 
 def _fallback_rationale(gap: dict, error: str | None = None) -> str:
-    suffix = f" (LLM unavailable: {error})" if error else ""
-    return f"USPSTF Grade {gap['uspstf_grade']} screening overdue per evidence above.{suffix}"
+    # Use the rule's own rationale_template from YAML when LLM is unavailable.
+    rules = load_care_gap_rules().get("rules", [])
+    template = next((r.get("rationale_template", "").strip() for r in rules if r["id"] == gap["id"]), "")
+    base = template or f"USPSTF Grade {gap['uspstf_grade']} screening recommended per evidence above."
+    if error:
+        return f"{base} (LLM unavailable: {error})"
+    return base

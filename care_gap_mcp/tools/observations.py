@@ -1,24 +1,7 @@
-"""Recent observations — labs and vitals, parsed for care-gap rule input."""
+"""Recent observations — labs and vitals, labels sourced from terminology.yaml."""
 from datetime import datetime, timedelta, timezone
 
-from po_fastmcp import FhirClient, get_fhir_context
-
-LOINC_OF_INTEREST = {
-    "4548-4": "HbA1c",
-    "85354-9": "Blood pressure panel",
-    "8480-6": "Systolic BP",
-    "8462-4": "Diastolic BP",
-    "2093-3": "Total cholesterol",
-    "13457-7": "LDL",
-    "2085-9": "HDL",
-}
-
-CPT_OF_INTEREST = {
-    "45378": "Colonoscopy",
-    "45330": "Sigmoidoscopy",
-    "82270": "FIT (fecal immunochemical test)",
-    "77067": "Mammography screening",
-}
+from po_fastmcp import FhirClient, get_fhir_context, label_for
 
 
 def register(mcp) -> None:
@@ -26,8 +9,8 @@ def register(mcp) -> None:
     async def list_recent_observations(months_back: int = 24) -> dict:
         """Return observations + procedures from the last `months_back` months.
 
-        Includes labs, vitals, and screening procedures (colonoscopy, mammography)
-        relevant to the care-gap rules.
+        Includes labs, vitals, and screening procedures (colonoscopy, mammography,
+        etc). Codes are labeled from knowledge_base/terminology.yaml when known.
         """
         context = get_fhir_context()
         if context is None or not context.patient_id:
@@ -69,7 +52,7 @@ def _summarize_observation(res: dict) -> dict:
         value, unit = vq.get("value"), vq.get("unit") or vq.get("code")
     return {
         "loinc": loinc,
-        "label": LOINC_OF_INTEREST.get(loinc) or code.get("text") or _first_display(codings),
+        "label": (loinc and label_for("loinc", loinc)) or code.get("text") or _first_display(codings),
         "value": value,
         "unit": unit,
         "effective_date": res.get("effectiveDateTime") or (res.get("effectivePeriod") or {}).get("start"),
@@ -82,7 +65,7 @@ def _summarize_procedure(res: dict) -> dict:
     cpt = next((c.get("code") for c in codings if c.get("system") == "http://www.ama-assn.org/go/cpt"), None)
     return {
         "cpt": cpt,
-        "label": CPT_OF_INTEREST.get(cpt) or code.get("text") or _first_display(codings),
+        "label": (cpt and label_for("cpt", cpt)) or code.get("text") or _first_display(codings),
         "performed_date": res.get("performedDateTime") or (res.get("performedPeriod") or {}).get("start"),
         "status": res.get("status"),
     }

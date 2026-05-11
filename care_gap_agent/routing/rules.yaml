@@ -1,0 +1,83 @@
+# Routing rules — intent → tool-chain mapping.
+#
+# This file is documentation, not code: it describes how the agent should
+# route different clinician requests. The agent's actual decisions are made
+# by Gemini reading prompts/agent_instruction.md; this file makes the
+# expected behavior auditable for judges, clinicians, and downstream agents.
+#
+# For each intent we declare:
+#   intent      a short label for the request type
+#   examples    things a clinician might say
+#   tool_chain  the tools the agent should call, in order
+#   external    whether the call ends in our external MCP server or stays local
+#
+# All tools currently route to the Care Gap Closer MCP server (external=true)
+# — the agent itself owns zero FHIR or LLM-authorship work. That is the
+# explicit design: the agent does reasoning, the MCP does data + drafting.
+
+version: "1.0"
+
+defaults:
+  external_mcp:
+    name: care-gap-mcp
+    url_env: MCP_SERVER_URL
+    default_url: "http://127.0.0.1:9000/mcp"
+    transport: streamable-http
+    auth: shared SHARP headers (X-FHIR-Server-URL, X-FHIR-Access-Token, X-Patient-ID)
+
+  fhir_context:
+    source: A2A message metadata, key fhir-context
+    bridged_by: shared/middleware.py + shared/fhir_hook.py
+    consumed_by: shared/tools/care_gap.py (forwards to MCP as SHARP headers)
+
+routes:
+
+  - intent: identify-care-gaps
+    examples:
+      - "What preventive care gaps does this patient have?"
+      - "Any open screening gaps for her?"
+      - "What's overdue?"
+    tool_chain:
+      - { tool: summarize_patient, external: true }
+      - { tool: find_care_gaps,    external: true }
+    presentation: bulleted list (title + rationale + key evidence value)
+
+  - intent: draft-outreach-for-gap
+    examples:
+      - "Draft an SMS about the A1c"
+      - "Write a portal message for the mammogram"
+      - "Reach out to the patient about colorectal screening"
+    tool_chain:
+      - { tool: find_care_gaps,        external: true }
+      - { tool: draft_outreach_message, external: true, requires: [gap, patient_name, channel] }
+    notes: pass the FULL gap object from find_care_gaps, not just the id
+
+  - intent: show-problem-list
+    examples:
+      - "What conditions does she have?"
+      - "Show me her active diagnoses"
+    tool_chain:
+      - { tool: list_active_conditions, external: true }
+
+  - intent: show-recent-data
+    examples:
+      - "What are her recent A1c values?"
+      - "Any recent blood pressures?"
+      - "When was her last colonoscopy?"
+    tool_chain:
+      - { tool: list_recent_observations, external: true }
+
+# ── Hand-offs to other agents (future) ────────────────────────────────────────
+# When the user asks something this agent doesn't cover, delegate via A2A.
+# These targets are illustrative; configure them in the PO portal when needed.
+
+handoffs:
+  - intent: schedule-appointment
+    examples: ["Book her in for the colonoscopy", "Schedule the mammogram"]
+    delegate_to: scheduling_agent           # external A2A agent on PO marketplace
+    reason: this agent only drafts outreach, it does not write to the calendar
+
+  - intent: clinical-decision-support
+    examples: ["Does she need a statin?", "What's the differential?"]
+    delegate_to: clinical_decision_agent
+    reason: this agent does not give clinical recommendations beyond USPSTF rules

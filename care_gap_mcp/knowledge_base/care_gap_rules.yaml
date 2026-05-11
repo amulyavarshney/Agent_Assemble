@@ -1,0 +1,91 @@
+# Care Gap Rules — USPSTF-aligned, deterministic.
+#
+# This file is the source of truth for what the rule engine flags. The Python
+# rule engine in tools/care_gaps.py reads it at startup; never edit the engine
+# to add a gap — edit this file instead.
+#
+# Each rule must specify:
+#   id              snake-case identifier (also used as the gap_id in outputs)
+#   title           clinician-facing one-line title
+#   severity        high | medium | low
+#   uspstf_grade    A | B | C | I (USPSTF letter grade)
+#   triggers        what FHIR signals must be present to flag this gap
+#   thresholds      what makes the signal stale (the "overdue" criterion)
+#   demographics    optional age range / gender filter
+#
+# Triggers reference coding sets defined in terminology.yaml by name.
+
+version: "1.0"
+generated_by: "Care Gap Closer MCP — USPSTF + HEDIS-aligned"
+
+rules:
+
+  - id: diabetes-a1c-overdue
+    title: HbA1c overdue for diabetic patient
+    severity: high
+    uspstf_grade: A
+    rationale_template: >
+      Patients with active diabetes need HbA1c monitoring at least every 6
+      months to detect glycemic deterioration before it drives complications.
+    triggers:
+      condition_in:
+        - diabetes_snomed
+        - diabetes_icd10
+    thresholds:
+      observation:
+        code_set: a1c_loinc
+        max_months_since: 6
+    demographics: {}
+
+  - id: hypertension-bp-overdue
+    title: Blood pressure check overdue for hypertensive patient
+    severity: medium
+    uspstf_grade: A
+    rationale_template: >
+      Patients with active hypertension require BP monitoring at least
+      annually; longer gaps mask uncontrolled disease and cardiovascular risk.
+    triggers:
+      condition_in:
+        - hypertension_snomed
+        - hypertension_icd10
+    thresholds:
+      observation:
+        code_set: systolic_bp_loinc
+        max_months_since: 12
+    demographics: {}
+
+  - id: colorectal-screening-overdue
+    title: Colorectal cancer screening overdue
+    severity: high
+    uspstf_grade: A
+    rationale_template: >
+      USPSTF recommends colorectal cancer screening for adults 45–75. A
+      colonoscopy lasts up to 10 years; FIT/FOBT must be repeated annually.
+    triggers: {}   # age alone is the trigger here
+    thresholds:
+      procedure_any:
+        - code_set: colonoscopy_cpt
+          max_months_since: 120     # 10 years
+        - code_set: fit_cpt
+          max_months_since: 12      # 1 year
+    demographics:
+      age_min: 45
+      age_max: 75
+
+  - id: mammography-overdue
+    title: Mammography overdue
+    severity: high
+    uspstf_grade: B
+    rationale_template: >
+      USPSTF recommends biennial screening mammography for women 40–74.
+      Adherence to the 24-month cadence is the strongest single predictor of
+      stage-at-diagnosis for breast cancer in this age band.
+    triggers: {}
+    thresholds:
+      procedure:
+        code_set: mammography_cpt
+        max_months_since: 24
+    demographics:
+      gender: female
+      age_min: 40
+      age_max: 74
