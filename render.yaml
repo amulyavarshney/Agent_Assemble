@@ -34,7 +34,10 @@ services:
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     # FastMCP reads MCP_HOST and MCP_PORT (see care_gap_mcp/main.py).
     startCommand: MCP_HOST=0.0.0.0 MCP_PORT=$PORT python main.py
-    healthCheckPath: /mcp
+    # No healthCheckPath: MCP-over-HTTP only accepts POSTs with
+    # `Accept: text/event-stream`, so any GET probe returns 406.
+    # Render will fall back to "process is listening on $PORT" as the
+    # liveness signal, which is correct for this server.
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.0"
