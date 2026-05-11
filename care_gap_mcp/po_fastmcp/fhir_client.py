@@ -1,3 +1,4 @@
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -6,6 +7,17 @@ import httpx
 from po_fastmcp.fhir_context import FhirContext
 
 FhirResource = dict[str, Any]
+
+
+# httpx defaults to 5s on every phase, which is too tight for real FHIR servers
+# returning large Bundles. Make the read budget generous, keep connect tight so
+# we fail fast on a wrong/down host. Override per-deployment via FHIR_HTTP_TIMEOUT.
+_DEFAULT_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=float(os.getenv("FHIR_HTTP_TIMEOUT", "30")),
+    write=30.0,
+    pool=10.0,
+)
 
 
 class FhirClient:
@@ -22,6 +34,9 @@ class FhirClient:
             headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
         return headers
 
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+
     async def read(self, resource_type: str, resource_id: str) -> FhirResource | None:
         url = (
             f"{self.context.url}/"
@@ -30,7 +45,7 @@ class FhirClient:
         )
         headers = self._headers()
 
-        async with httpx.AsyncClient() as client:
+        async with self._client() as client:
             response = await client.get(url, headers=headers)
 
         if response.status_code == 404:
@@ -52,7 +67,7 @@ class FhirClient:
         )
         headers = self._headers(include_content_type=True)
 
-        async with httpx.AsyncClient() as client:
+        async with self._client() as client:
             response = await client.put(url, headers=headers, json=resource)
 
         response.raise_for_status()
@@ -71,7 +86,7 @@ class FhirClient:
         if limit:
             params["_count"] = limit
 
-        async with httpx.AsyncClient() as client:
+        async with self._client() as client:
             response = await client.get(url, headers=headers, params=params)
 
         response.raise_for_status()
