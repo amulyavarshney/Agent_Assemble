@@ -24,35 +24,39 @@
 services:
 
   # ── MCP server ───────────────────────────────────────────────────────────
+  # Python version comes from care_gap_mcp/.python-version (3.13).
   - type: web
     name: care-gap-mcp
     runtime: python
     plan: free
     region: oregon
     rootDir: care_gap_mcp
-    pythonVersion: "3.13"
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     # FastMCP reads MCP_HOST and MCP_PORT (see care_gap_mcp/main.py).
     startCommand: MCP_HOST=0.0.0.0 MCP_PORT=$PORT python main.py
     healthCheckPath: /mcp
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.0"
       - key: GOOGLE_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
 
   # ── A2A agent ────────────────────────────────────────────────────────────
+  # Python version comes from care_gap_agent/.python-version (3.11).
   - type: web
     name: care-gap-agent
     runtime: python
     plan: free
     region: oregon
     rootDir: care_gap_agent
-    pythonVersion: "3.11"
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn care_gap_agent.app:a2a_app --host 0.0.0.0 --port $PORT
     healthCheckPath: /.well-known/agent-card.json
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.10"
       - key: GOOGLE_API_KEY
         sync: false
       - key: API_KEY_PRIMARY
